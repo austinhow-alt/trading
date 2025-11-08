@@ -1,0 +1,348 @@
+//+------------------------------------------------------------------+
+//|                                                     OrderBookEA.mq5 |
+//|                               Copyright 2025, Austin Quant Projects |
+//+------------------------------------------------------------------+
+#property version   "1.00"
+#property strict
+
+#include <Trade/Trade.mqh>
+
+//--- Input Parameters
+input double   InpLotSize = 0.5;              // Trading Lot Size
+input double   InpMaxRiskPercent = 5.0;       // Maximum Account Risk (%)
+input int      InpDeltaThreshold = 10000;     // Order Book Delta Threshold
+input int      InpMAPeriod = 10;              // Moving Average Period
+input int      InpATRPeriod = 14;             // ATR Period
+input int      InpMaxSpread = 30;             // Maximum Spread in Points
+input double   InpDeltaPriceOffset = 0.0002;  // Price Offset for Limit Orders
+input int      InpMinDeltaStrength = 80;      // Minimum Delta Strength (0-100)
+
+//--- Global Variables
+CTrade        g_trade;                         // Trading object
+int           g_maHandle;                      // Moving Average indicator handle
+int           g_atrHandle;                     // ATR indicator handle
+MqlBookInfo   g_bookArray[];                  // Array for order book data
+int           g_lastTrendDirection = 0;        // Track last trend direction
+bool          g_positionOpen = false;          // Track if we have an open position
+bool          g_pendingOrderExists = false;    // Track if we have a pending order
+
+//+------------------------------------------------------------------+
+//| Expert initialization function                                      |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+    // Initialize indicators
+    g_maHandle = iMA(_Symbol, PERIOD_CURRENT, InpMAPeriod, 0, MODE_SMA, PRICE_CLOSE);
+    g_atrHandle = iATR(_Symbol, PERIOD_CURRENT, InpATRPeriod);
+    
+    if(g_maHandle == INVALID_HANDLE || g_atrHandle == INVALID_HANDLE)
+    {
+        Print("Error initializing indicators: MA=", g_maHandle, " ATR=", g_atrHandle);
+        return INIT_FAILED;
+    }
+    
+    // Enable order book tracking
+    if(!MarketBookAdd(_Symbol))
+    {
+        Print("Failed to enable order book for ", _Symbol);
+        return INIT_FAILED;
+    }
+    
+    // Configure trade settings
+    g_trade.SetExpertMagicNumber(123456);
+    g_trade.SetMarginMode();
+    g_trade.SetTypeFillingBySymbol(_Symbol);
+    
+    // Initialize position tracking
+    UpdatePositionStatus();
+    
+    Print("OrderBookEA initialized successfully");
+    return INIT_SUCCEEDED;
+}
+
+//+------------------------------------------------------------------+
+//| Expert deinitialization function                                   |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+    IndicatorRelease(g_maHandle);
+    IndicatorRelease(g_atrHandle);
+    MarketBookRelease(_Symbol);
+    Print("OrderBookEA deinitialized, reason code: ", reason);
+}
+
+//+------------------------------------------------------------------+
+//| Update position and order status                                   |
+//+------------------------------------------------------------------+
+void UpdatePositionStatus()
+{
+    g_positionOpen = false;
+    g_pendingOrderExists = false;
+    
+    // Check for open positions
+    for(int i = 0; i < PositionsTotal(); i++)
+    {
+        if(PositionSelectByTicket(PositionGetTicket(i)))
+        {
+            if(PositionGetString(POSITION_SYMBOL) == _Symbol && 
+               PositionGetInteger(POSITION_MAGIC) == g_trade.RequestMagic())
+            {
+                g_positionOpen = true;
+                break;
+            }
+        }
+    }
+    
+    // Check for pending orders
+    for(int i = 0; i < OrdersTotal(); i++)
+    {
+        if(OrderSelect(OrderGetTicket(i)))
+        {
+            if(OrderGetString(ORDER_SYMBOL) == _Symbol && 
+               OrderGetInteger(ORDER_MAGIC) == g_trade.RequestMagic())
+            {
+                g_pendingOrderExists = true;
+                break;
+            }
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Calculate Order Book Delta and its strength                        |
+//+------------------------------------------------------------------+
+bool CalculateOrderBookDelta(double &delta, int &strength)
+{
+    if(!MarketBookGet(_Symbol, g_bookArray))
+        return false;
+        
+    long totalBidVolume = 0;
+    long totalAskVolume = 0;
+    long maxVolume = 0;
+    
+    int size = ArraySize(g_bookArray);
+    for(int i = 0; i < size; i++)
+    {
+        long volume = g_bookArray[i].volume;
+        maxVolume = MathMax(maxVolume, volume);
+        
+        if(g_bookArray[i].type == BOOK_TYPE_SELL)
+            totalAskVolume += volume;
+        else if(g_bookArray[i].type == BOOK_TYPE_BUY)
+            totalBidVolume += volume;
+    }
+    
+    delta = (double)(totalAskVolume - totalBidVolume);
+    
+    // Calculate delta strength (0-100)
+    double totalVolume = totalAskVolume + totalBidVolume;
+    strength = (int)((MathAbs(delta) / totalVolume) * 100);
+    
+    return true;
+}
+
+//+------------------------------------------------------------------+
+//| Find best entry price from order book                             |
+//+------------------------------------------------------------------+
+double FindEntryPrice(bool isBuy)
+{
+    if(!MarketBookGet(_Symbol, g_bookArray))
+        return 0.0;
+    
+    double currentPrice = isBuy ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    double entryPrice = currentPrice;
+    long maxVolume = 0;
+    
+    int size = ArraySize(g_bookArray);
+    for(int i = 0; i < size; i++)
+    {
+        if(g_bookArray[i].volume > maxVolume)
+        {
+            if((isBuy && g_bookArray[i].type == BOOK_TYPE_BUY) || 
+               (!isBuy && g_bookArray[i].type == BOOK_TYPE_SELL))
+            {
+                maxVolume = g_bookArray[i].volume;
+                entryPrice = g_bookArray[i].price;
+            }
+        }
+    }
+    
+    return isBuy ? entryPrice - InpDeltaPriceOffset : entryPrice + InpDeltaPriceOffset;
+}
+
+//+------------------------------------------------------------------+
+//| Get trend direction based on MA                                    |
+//+------------------------------------------------------------------+
+int GetTrendDirection()
+{
+    double maValues[];
+    ArraySetAsSeries(maValues, true);
+    
+    if(CopyBuffer(g_maHandle, 0, 0, 2, maValues) != 2)
+        return 0;
+        
+    return maValues[0] > maValues[1] ? 1 : -1;
+}
+
+//+------------------------------------------------------------------+
+//| Calculate ATR-based Stop Loss and Take Profit                      |
+//+------------------------------------------------------------------+
+bool CalculateTPSL(bool isBuy, double entryPrice, double &sl, double &tp)
+{
+    double atr[];
+    ArraySetAsSeries(atr, true);
+    
+    if(CopyBuffer(g_atrHandle, 0, 0, 1, atr) != 1)
+        return false;
+        
+    double atrValue = atr[0];
+    
+    if(isBuy)
+    {
+        sl = entryPrice - (2 * atrValue);
+        tp = entryPrice + (4 * atrValue); // 2:1 risk:reward
+    }
+    else
+    {
+        sl = entryPrice + (2 * atrValue);
+        tp = entryPrice - (4 * atrValue); // 2:1 risk:reward
+    }
+    
+    return true;
+}
+
+//+------------------------------------------------------------------+
+//| Close all positions and orders                                     |
+//+------------------------------------------------------------------+
+void CloseAllPositionsAndOrders()
+{
+    // Close open positions
+    for(int i = PositionsTotal() - 1; i >= 0; i--)
+    {
+        ulong ticket = PositionGetTicket(i);
+        if(PositionSelectByTicket(ticket))
+        {
+            if(PositionGetString(POSITION_SYMBOL) == _Symbol && 
+               PositionGetInteger(POSITION_MAGIC) == g_trade.RequestMagic())
+            {
+                g_trade.PositionClose(ticket);
+            }
+        }
+    }
+    
+    // Cancel pending orders
+    for(int i = OrdersTotal() - 1; i >= 0; i--)
+    {
+        ulong ticket = OrderGetTicket(i);
+        if(OrderSelect(ticket))
+        {
+            if(OrderGetString(ORDER_SYMBOL) == _Symbol && 
+               OrderGetInteger(ORDER_MAGIC) == g_trade.RequestMagic())
+            {
+                g_trade.OrderDelete(ticket);
+            }
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Check risk management                                              |
+//+------------------------------------------------------------------+
+bool CheckRiskManagement()
+{
+    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+    double currentRisk = 0.0;
+    
+    for(int i = 0; i < PositionsTotal(); i++)
+    {
+        ulong ticket = PositionGetTicket(i);
+        if(PositionSelectByTicket(ticket))
+        {
+            double positionRisk = MathAbs(PositionGetDouble(POSITION_PROFIT));
+            currentRisk += positionRisk;
+        }
+    }
+    
+    return (currentRisk / equity) * 100 < InpMaxRiskPercent;
+}
+
+//+------------------------------------------------------------------+
+//| Check spread                                                       |
+//+------------------------------------------------------------------+
+bool IsSpreadAcceptable()
+{
+    return SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) <= InpMaxSpread;
+}
+
+//+------------------------------------------------------------------+
+//| Expert tick function                                               |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+    if(Bars(_Symbol, PERIOD_CURRENT) < InpMAPeriod + 1)
+        return;
+        
+    UpdatePositionStatus();
+    
+    int currentTrend = GetTrendDirection();
+    
+    // Check for trend change and close positions if needed
+    if(currentTrend != g_lastTrendDirection && g_lastTrendDirection != 0)
+    {
+        CloseAllPositionsAndOrders();
+        UpdatePositionStatus();
+    }
+    
+    g_lastTrendDirection = currentTrend;
+    
+    // Don't open new positions if we already have one
+    if(g_positionOpen || g_pendingOrderExists)
+        return;
+        
+    if(!CheckRiskManagement() || !IsSpreadAcceptable())
+        return;
+    
+    double delta;
+    int deltaStrength;
+    if(!CalculateOrderBookDelta(delta, deltaStrength))
+        return;
+        
+    // Only take trades with strong delta
+    if(deltaStrength < InpMinDeltaStrength)
+        return;
+    
+    // Trading logic
+    if(currentTrend < 0 && delta <= -InpDeltaThreshold) // Buy signal
+    {
+        double entryPrice = FindEntryPrice(true);
+        if(entryPrice == 0)
+            return;
+            
+        double sl, tp;
+        if(!CalculateTPSL(true, entryPrice, sl, tp))
+            return;
+            
+        g_trade.BuyLimit(InpLotSize, entryPrice, _Symbol, sl, tp, ORDER_TIME_GTC, 0, "OrderBookEA Buy");
+    }
+    else if(currentTrend > 0 && delta >= InpDeltaThreshold) // Sell signal
+    {
+        double entryPrice = FindEntryPrice(false);
+        if(entryPrice == 0)
+            return;
+            
+        double sl, tp;
+        if(!CalculateTPSL(false, entryPrice, sl, tp))
+            return;
+            
+        g_trade.SellLimit(InpLotSize, entryPrice, _Symbol, sl, tp, ORDER_TIME_GTC, 0, "OrderBookEA Sell");
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Expert Book event function                                         |
+//+------------------------------------------------------------------+
+void OnBookEvent(const string &symbol)
+{
+    if(symbol != _Symbol)
+        return;
+}

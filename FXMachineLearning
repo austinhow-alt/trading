@@ -1,0 +1,210 @@
+#!/usr/bin/env python3
+"""
+MQLV3 - FX Mathematical Discovery Framework
+============================================
+
+Production-ready mathematical discovery system for forex markets.
+Analyzes AUDUSD and USDCAD using real market data to discover
+tradeable mathematical relationships.
+
+Features:
+- Real market data from Twelve Data API
+- High-frequency tick-level analysis
+- Mathematical pattern discovery
+- Backtesting with transaction costs
+- Professional performance metrics
+"""
+import sys
+import os
+from pathlib import Path
+
+# Add current directory to Python path so we can import fxmath modules
+script_dir = Path(__file__).parent.absolute()
+fxmath_dir = script_dir / 'fxmath'
+if str(script_dir) not in sys.path:
+    sys.path.insert(0, str(script_dir))
+if str(fxmath_dir) not in sys.path:
+    sys.path.insert(0, str(fxmath_dir))
+
+# Import directly from modules (no __init__.py needed)
+try:
+    from fxmath.core import FXMathPipeline
+    from fxmath.data import download_real_data
+except ImportError:
+    # If fxmath folder structure doesn't work, try direct imports
+    import core as fxmath_core
+    import data as fxmath_data
+    FXMathPipeline = fxmath_core.FXMathPipeline
+    download_real_data = fxmath_data.download_real_data
+
+import warnings
+import argparse
+warnings.filterwarnings('ignore')
+
+
+def run_audusd(output_dir='artifacts/AUDUSD', data_path=None):
+    """Run discovery pipeline for AUDUSD"""
+    print("\n" + "=" * 100)
+    print("AUDUSD MATHEMATICAL DISCOVERY")
+    print("=" * 100)
+    
+    config = {
+        'output_dir': output_dir,
+        'window_ms': 300000,  # 5 minutes (trading timeframe)
+        'step_ms': 60000,  # 1 minute
+        'price_col': 'last',
+        'risk_free_rate': 0.0,
+        'transaction_cost': 0.0001,  # 1 pip
+        'initial_capital': 10000,
+    }
+    
+    pipeline = FXMathPipeline(config)
+    
+    # Use real market data
+    print(f"Loading AUDUSD market data from: {data_path}")
+    results = pipeline.run_full_pipeline(path=data_path, file_format='csv')
+    
+    return results
+
+
+def run_usdcad(output_dir='artifacts/USDCAD', data_path=None):
+    """Run discovery pipeline for USDCAD"""
+    print("\n" + "=" * 100)
+    print("USDCAD MATHEMATICAL DISCOVERY")
+    print("=" * 100)
+    
+    config = {
+        'output_dir': output_dir,
+        'window_ms': 300000,  # 5 minutes (trading timeframe)
+        'step_ms': 60000,  # 1 minute
+        'price_col': 'last',
+        'risk_free_rate': 0.0,
+        'transaction_cost': 0.0001,  # 1 pip
+        'initial_capital': 10000,
+    }
+    
+    pipeline = FXMathPipeline(config)
+    
+    # Use real market data
+    print(f"Loading USDCAD market data from: {data_path}")
+    results = pipeline.run_full_pipeline(path=data_path, file_format='csv')
+    
+    return results
+
+
+def main():
+    """Main execution"""
+    parser = argparse.ArgumentParser(
+        description='FX Mathematical Discovery Framework - Production Ready',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Download and analyze AUDUSD
+  python MQLV3.py --pair AUDUSD --download
+
+  # Analyze with existing CSV
+  python MQLV3.py --pair AUDUSD --data-path data/AUDUSD_ticks.csv
+  
+  # Analyze both pairs
+  python MQLV3.py --pair both --download
+        """
+    )
+    parser.add_argument('--pair', type=str, default='AUDUSD', 
+                       choices=['AUDUSD', 'USDCAD', 'both'],
+                       help='Which FX pair to analyze')
+    parser.add_argument('--output', type=str, default='artifacts',
+                       help='Output directory for results')
+    parser.add_argument('--data-path', type=str,
+                       help='Path to market data CSV file (if already downloaded)')
+    parser.add_argument('--download', action='store_true',
+                       help='Download fresh market data from API')
+    parser.add_argument('--days', type=int, default=90,
+                       help='Number of days of data to download (default: 90)')
+    
+    args = parser.parse_args()
+    
+    # Validate inputs
+    if not args.data_path and not args.download:
+        print("\n" + "=" * 100)
+        print("ERROR: Must provide either --data-path or --download")
+        print("=" * 100)
+        print("\nUse --download to fetch fresh market data, or")
+        print("Use --data-path <file> to use existing CSV data\n")
+        parser.print_help()
+        sys.exit(1)
+    
+    results = {}
+    
+    # Download data if requested
+    if args.download:
+        print("\n" + "=" * 100)
+        print("DOWNLOADING MARKET DATA")
+        print("=" * 100)
+        try:
+            if args.pair in ['AUDUSD', 'both']:
+                print("\nDownloading AUDUSD data...")
+                audusd_path = download_real_data('AUD/USD', days=args.days, output_file='data/AUDUSD_ticks.csv')
+            
+            if args.pair in ['USDCAD', 'both']:
+                print("\nDownloading USDCAD data...")
+                usdcad_path = download_real_data('USD/CAD', days=args.days, output_file='data/USDCAD_ticks.csv')
+                
+        except Exception as e:
+            print(f"\n❌ Data download failed: {e}")
+            print("\nPlease check:")
+            print("  1. config.ini exists with valid Twelve Data API key")
+            print("  2. Internet connection is working")
+            print("  3. API rate limits not exceeded")
+            sys.exit(1)
+    
+    # Run analysis
+    if args.pair in ['AUDUSD', 'both']:
+        data_path = 'data/AUDUSD_ticks.csv' if args.download else args.data_path
+        results['AUDUSD'] = run_audusd(
+            output_dir=f'{args.output}/AUDUSD',
+            data_path=data_path
+        )
+    
+    if args.pair in ['USDCAD', 'both']:
+        data_path = 'data/USDCAD_ticks.csv' if args.download else args.data_path
+        results['USDCAD'] = run_usdcad(
+            output_dir=f'{args.output}/USDCAD',
+            data_path=data_path
+        )
+    
+    # Print summary
+    print("\n" + "=" * 100)
+    print("SUMMARY")
+    print("=" * 100)
+    
+    for pair, res in results.items():
+        if res:
+            print(f"\n{pair}:")
+            print(f"  Sharpe Ratio: {res['metrics']['sharpe_ratio']:.4f}")
+            print(f"  Sortino Ratio: {res['metrics']['sortino_ratio']:.4f}")
+            print(f"  Win Rate: {res['metrics']['win_rate']:.2%}")
+            print(f"  Max Drawdown: {res['metrics']['max_drawdown']:.4f}")
+            print(f"  Total Return: {res['metrics']['total_return']:.4f}")
+            print(f"  Num Trades: {res['metrics']['num_trades']}")
+    
+    print("\n" + "=" * 100)
+    print("✓ Processing complete!")
+    print(f"✓ Results saved to: {args.output}/")
+    print("=" * 100)
+    print()
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        print("\n" + "=" * 100)
+        print("ERROR OCCURRED")
+        print("=" * 100)
+        print(f"\n{e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        print("\nPress Enter to exit...")
+        input()
+

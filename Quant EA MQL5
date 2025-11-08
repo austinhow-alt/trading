@@ -4,7 +4,7 @@
 //| Integrates ML-identified trading techniques                       |
 //+------------------------------------------------------------------+
 #property copyright "Austin - Quantitative Trading Systems"
-#property link      "https://github.com/austinhowardalt"
+#property link      "https://github.com/austinhoward-alt"
 #property version   "1.00"
 #property description "Modular EA using quantitative & ML techniques"
 #property description "Supports multiple signal types with dynamic TP/SL"

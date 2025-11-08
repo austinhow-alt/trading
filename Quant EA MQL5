@@ -1,0 +1,1581 @@
+//+------------------------------------------------------------------+
+//| Quant_EA.mql5                                                     |
+//| Advanced Quantitative Expert Advisor                              |
+//| Integrates ML-identified trading techniques                       |
+//+------------------------------------------------------------------+
+#property copyright "Austin - Quantitative Trading Systems"
+#property link      "https://github.com/austinhowardalt"
+#property version   "1.00"
+#property description "Modular EA using quantitative & ML techniques"
+#property description "Supports multiple signal types with dynamic TP/SL"
+
+//+------------------------------------------------------------------+
+//| INCLUDES                                                          |
+//+------------------------------------------------------------------+
+#include <Trade\Trade.mqh>
+#include <Trade\PositionInfo.mqh>
+#include <Trade\SymbolInfo.mqh>
+
+CTrade trade;
+CPositionInfo position;
+CSymbolInfo symbolInfo;
+
+//+------------------------------------------------------------------+
+//| EA SETTINGS - TECHNIQUE TOGGLES                                   |
+//+------------------------------------------------------------------+
+
+// === MOMENTUM TECHNIQUES ===
+input group "=== MOMENTUM INDICATORS ==="
+input bool Use_RSI = true;                    // Use RSI Signal
+input int RSI_Period = 14;                    // RSI Period
+input double RSI_Oversold = 30;               // RSI Oversold Level
+input double RSI_Overbought = 70;             // RSI Overbought Level
+input double RSI_Weight = 1.0;                // RSI Signal Weight
+
+input bool Use_MACD = true;                   // Use MACD Signal
+input int MACD_Fast = 12;                     // MACD Fast Period
+input int MACD_Slow = 26;                     // MACD Slow Period
+input int MACD_Signal = 9;                    // MACD Signal Period
+input double MACD_Weight = 1.5;               // MACD Signal Weight
+
+input bool Use_ADX = true;                    // Use ADX Signal
+input int ADX_Period = 14;                    // ADX Period
+input double ADX_Threshold = 25;              // ADX Trend Strength Threshold
+input double ADX_Weight = 1.2;                // ADX Signal Weight
+
+// === MEAN REVERSION TECHNIQUES ===
+input group "=== MEAN REVERSION INDICATORS ==="
+input bool Use_Bollinger = true;             // Use Bollinger Bands
+input int BB_Period = 20;                     // Bollinger Period
+input double BB_Deviation = 2.0;              // Bollinger Std Deviation
+input double BB_Weight = 1.3;                 // Bollinger Signal Weight
+
+input bool Use_ZScore = true;                 // Use Z-Score Mean Reversion
+input int ZScore_Period = 20;                 // Z-Score Period
+input double ZScore_Threshold = 1.5;          // Z-Score Entry Threshold
+input double ZScore_Weight = 1.0;             // Z-Score Signal Weight
+
+// === VOLUME TECHNIQUES ===
+input group "=== VOLUME INDICATORS ==="
+input bool Use_VWAP = true;                   // Use VWAP Signal
+input double VWAP_Weight = 1.5;               // VWAP Signal Weight
+
+input bool Use_MFI = true;                    // Use Money Flow Index
+input int MFI_Period = 14;                    // MFI Period
+input double MFI_Oversold = 20;               // MFI Oversold Level
+input double MFI_Overbought = 80;             // MFI Overbought Level
+input double MFI_Weight = 1.2;                // MFI Signal Weight
+
+input bool Use_OBV = true;                    // Use On Balance Volume
+input int OBV_MA_Period = 20;                 // OBV Moving Average Period
+input double OBV_Weight = 0.8;                // OBV Signal Weight
+
+// === VOLATILITY TECHNIQUES ===
+input group "=== VOLATILITY INDICATORS ==="
+input bool Use_ATR = true;                    // Use ATR for Sizing
+input int ATR_Period = 14;                    // ATR Period
+input double ATR_Weight = 1.0;                // ATR Signal Weight
+
+input bool Use_Volatility_Filter = true;      // Use Volatility Regime Filter
+input int Vol_Period = 20;                    // Volatility Period
+input double Vol_Threshold = 1.5;             // High Volatility Threshold (vs median)
+
+input bool Use_GARCH_Logic = true;            // Use GARCH-style Volatility
+input int GARCH_Period = 20;                  // GARCH Period
+input double GARCH_Weight = 0.7;              // GARCH Signal Weight
+
+// === MARKET REGIME DETECTION ===
+input group "=== REGIME DETECTION ==="
+input bool Use_Regime_Filter = true;         // Use Market Regime Filter
+input int Regime_Period = 50;                 // Regime Detection Period
+input double Regime_Weight = 1.5;             // Regime Signal Weight
+
+input bool Use_Trend_Regime = true;           // Use Trend vs Range Detection
+input double Trend_Threshold = 0.7;           // Trend Strength Threshold
+
+// === TIME-BASED FILTERS (for 5-min trading) ===
+input group "=== TIME FILTERS ==="
+input bool Use_Session_Filter = true;        // Use Trading Session Filter
+input bool Trade_London = true;               // Trade London Session (08:00-17:00 GMT)
+input bool Trade_NewYork = true;              // Trade New York Session (13:00-22:00 GMT)
+input bool Trade_Tokyo = false;               // Trade Tokyo Session (00:00-09:00 GMT)
+input bool Trade_Overlap = true;              // Prefer London-NY Overlap (13:00-17:00 GMT)
+input double Overlap_Weight = 1.3;            // Session Overlap Weight Boost
+
+input bool Use_Hour_Filter = true;            // Use Hour-based Filter
+input int Start_Hour = 8;                     // Trading Start Hour (GMT)
+input int End_Hour = 17;                      // Trading End Hour (GMT)
+
+input bool Avoid_Monday = true;               // Avoid Monday Trading
+input bool Avoid_Friday_PM = true;            // Avoid Friday Afternoon
+
+// === STATISTICAL TECHNIQUES ===
+input group "=== STATISTICAL INDICATORS ==="
+input bool Use_Hurst = false;                 // Use Hurst Exponent (trend vs MR)
+input int Hurst_Period = 100;                 // Hurst Calculation Period
+input double Hurst_Weight = 0.5;              // Hurst Signal Weight
+
+input bool Use_Autocorr = true;               // Use Autocorrelation
+input int Autocorr_Lag = 5;                   // Autocorrelation Lag
+input double Autocorr_Weight = 0.6;           // Autocorr Signal Weight
+
+input bool Use_Returns = true;                // Use Raw Returns Signal
+input int Returns_Period = 1;                 // Returns Lookback
+input double Returns_Weight = 0.7;            // Returns Signal Weight
+
+input bool Use_Skewness = true;               // Use Returns Skewness
+input int Skew_Period = 20;                   // Skewness Period
+input double Skew_Threshold = 0.5;            // Skewness Threshold
+input double Skew_Weight = 0.8;               // Skewness Signal Weight
+
+input bool Use_Kurtosis = true;               // Use Returns Kurtosis
+input int Kurt_Period = 20;                   // Kurtosis Period
+input double Kurt_Threshold = 0.5;            // Kurtosis Threshold
+input double Kurt_Weight = 0.7;               // Kurtosis Signal Weight
+
+input bool Use_ROC = true;                    // Use Rate of Change
+input int ROC_Period = 5;                     // ROC Period
+input double ROC_Weight = 1.0;                // ROC Signal Weight
+
+input bool Use_MA_Distance = true;            // Use MA Distance
+input int MA_Distance_Period = 200;           // MA Period for Distance
+input double MA_Distance_Weight = 1.0;        // MA Distance Signal Weight
+
+// === MICROSTRUCTURE ===
+input group "=== MARKET MICROSTRUCTURE ==="
+input bool Use_HighLow_Spread = true;         // Use HL Spread Filter
+input double HL_Threshold = 0.02;             // Max HL Spread % for Entry
+
+input bool Use_Shadow_Analysis = true;        // Use Candle Shadow Analysis
+input double Shadow_Weight = 0.8;             // Shadow Signal Weight
+
+input bool Use_Gap_Analysis = true;           // Use Gap Detection
+input double Gap_Weight = 1.0;                // Gap Signal Weight
+
+input bool Use_CO_Spread = true;             // Use Close-Open Spread
+input double CO_Weight = 0.8;                 // CO Spread Signal Weight
+
+// === ML ENSEMBLE SETTINGS ===
+input group "=== ML ENSEMBLE ==="
+input bool Use_ML_Ensemble = true;            // Use ML Ensemble Signals
+input double ML_Confidence_Min = 0.55;        // Minimum ML Confidence
+input double ML_Weight = 2.0;                 // ML Signal Weight (highest)
+input string ML_Signals_File = "forex_5min_signals/signal_summary.csv";  // ML Signals File Path
+
+//+------------------------------------------------------------------+
+//| ENUM DECLARATIONS (must be before inputs)                         |
+//+------------------------------------------------------------------+
+enum ENUM_TP_MODE
+{
+   TP_FIXED,           // Fixed Pips
+   TP_ATR,             // ATR-based
+   TP_LIQUIDITY,       // Previous Liquidity Zone
+   TP_RR_BASED         // Risk-Reward Ratio Based
+};
+
+enum ENUM_SL_MODE
+{
+   SL_FIXED,           // Fixed Pips
+   SL_ATR,             // ATR-based
+   SL_RR_RATIO,        // Risk-Reward Ratio
+   SL_SWING            // Swing High/Low
+};
+
+//+------------------------------------------------------------------+
+//| TAKE PROFIT SETTINGS                                              |
+//+------------------------------------------------------------------+
+input group "=== TAKE PROFIT LOGIC ==="
+input ENUM_TP_MODE TP_Mode = TP_LIQUIDITY;    // TP Mode
+input double TP_Pips = 30;                    // Fixed TP (pips)
+input double TP_ATR_Multiplier = 2.5;         // ATR TP Multiplier
+input int TP_Lookback = 20;                   // Liquidity Zone Lookback
+input bool Use_Partial_TP = true;             // Use Partial Take Profits
+input double Partial_TP_Percent = 50;         // % to Close at First TP
+input double Partial_TP_Ratio = 1.5;          // Partial TP at X:1 RR
+
+//+------------------------------------------------------------------+
+//| STOP LOSS SETTINGS                                                |
+//+------------------------------------------------------------------+
+input group "=== STOP LOSS LOGIC ==="
+input ENUM_SL_MODE SL_Mode = SL_RR_RATIO;     // SL Mode
+input double SL_Pips = 20;                    // Fixed SL (pips)
+input double SL_ATR_Multiplier = 1.5;         // ATR SL Multiplier
+input double Risk_Reward_Ratio = 2.0;         // Risk:Reward Ratio (for RR mode)
+input bool Use_Trailing_Stop = true;          // Use Trailing Stop
+input double Trail_Start_Pips = 15;           // Trailing Start (pips)
+input double Trail_Step_Pips = 5;             // Trailing Step (pips)
+
+//+------------------------------------------------------------------+
+//| RISK MANAGEMENT                                                   |
+//+------------------------------------------------------------------+
+input group "=== RISK MANAGEMENT ==="
+input double Risk_Percent = 0.5;              // Risk Per Trade (% of balance)
+input double Max_Position_Size = 0.5;         // Max Position Size (lots)
+input double Min_Position_Size = 0.01;        // Min Position Size (lots)
+input int Max_Trades_Per_Symbol = 1;          // Max Concurrent Trades Per Symbol
+input int Max_Total_Trades = 5;               // Max Total Open Trades
+input double Max_Daily_Loss_Percent = 3.0;    // Max Daily Loss (%)
+input double Max_Spread_Points = 30;          // Max Spread for Entry (points)
+
+//+------------------------------------------------------------------+
+//| SIGNAL COMBINATION                                                |
+//+------------------------------------------------------------------+
+input group "=== SIGNAL SETTINGS ==="
+input double Signal_Threshold = 0.5;          // Min Combined Signal Strength (0.3-1.0 with weighted avg)
+input bool Require_All_Confirmations = false; // Require ALL enabled signals
+input bool Use_Weighted_Average = true;       // Use Weighted Average of Signals
+
+//+------------------------------------------------------------------+
+//| GENERAL SETTINGS                                                  |
+//+------------------------------------------------------------------+
+input group "=== GENERAL SETTINGS ==="
+input int Magic_Number = 12345;               // Magic Number
+input string Trade_Comment = "Quant_EA";      // Trade Comment
+input bool Enable_Trading = true;             // Enable Trading
+input bool Show_Panel = true;                 // Show Info Panel
+input color Panel_Color = clrDarkSlateGray;   // Panel Background Color
+
+//+------------------------------------------------------------------+
+//| GLOBAL VARIABLES                                                  |
+//+------------------------------------------------------------------+
+datetime lastBarTime = 0;
+double dailyPnL = 0;
+datetime dailyPnLDate = 0;
+int totalSignalsActive = 0;
+
+// Indicator Handles
+int handleRSI, handleMACD, handleADX, handleBB, handleMFI;
+int handleATR, handleVWAP, handleOBV;
+
+// Buffers
+double rsiBuffer[], macdMainBuffer[], macdSignalBuffer[], adxBuffer[];
+double bbUpperBuffer[], bbMiddleBuffer[], bbLowerBuffer[];
+double mfiBuffer[], atrBuffer[], vwapBuffer[], obvBuffer[];
+
+//+------------------------------------------------------------------+
+//| Expert initialization function                                     |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+   Print("═══════════════════════════════════════════════════════════");
+   Print("  QUANTITATIVE EA - INITIALIZING");
+   Print("═══════════════════════════════════════════════════════════");
+   
+   // Set symbol
+   symbolInfo.Name(_Symbol);
+   symbolInfo.RefreshRates();
+   
+   // Initialize indicators based on enabled techniques
+   if(Use_RSI)
+   {
+      handleRSI = iRSI(_Symbol, PERIOD_CURRENT, RSI_Period, PRICE_CLOSE);
+      if(handleRSI == INVALID_HANDLE)
+      {
+         Print("❌ Failed to create RSI indicator");
+         return INIT_FAILED;
+      }
+      Print("✓ RSI Indicator initialized");
+   }
+   
+   if(Use_MACD)
+   {
+      handleMACD = iMACD(_Symbol, PERIOD_CURRENT, MACD_Fast, MACD_Slow, MACD_Signal, PRICE_CLOSE);
+      if(handleMACD == INVALID_HANDLE)
+      {
+         Print("❌ Failed to create MACD indicator");
+         return INIT_FAILED;
+      }
+      Print("✓ MACD Indicator initialized");
+   }
+   
+   if(Use_ADX)
+   {
+      handleADX = iADX(_Symbol, PERIOD_CURRENT, ADX_Period);
+      if(handleADX == INVALID_HANDLE)
+      {
+         Print("❌ Failed to create ADX indicator");
+         return INIT_FAILED;
+      }
+      Print("✓ ADX Indicator initialized");
+   }
+   
+   if(Use_Bollinger)
+   {
+      handleBB = iBands(_Symbol, PERIOD_CURRENT, BB_Period, 0, BB_Deviation, PRICE_CLOSE);
+      if(handleBB == INVALID_HANDLE)
+      {
+         Print("❌ Failed to create Bollinger Bands");
+         return INIT_FAILED;
+      }
+      Print("✓ Bollinger Bands initialized");
+   }
+   
+   if(Use_MFI)
+   {
+      handleMFI = iMFI(_Symbol, PERIOD_CURRENT, MFI_Period, VOLUME_TICK);
+      if(handleMFI == INVALID_HANDLE)
+      {
+         Print("❌ Failed to create MFI indicator");
+         return INIT_FAILED;
+      }
+      Print("✓ MFI Indicator initialized");
+   }
+   
+   if(Use_ATR)
+   {
+      handleATR = iATR(_Symbol, PERIOD_CURRENT, ATR_Period);
+      if(handleATR == INVALID_HANDLE)
+      {
+         Print("❌ Failed to create ATR indicator");
+         return INIT_FAILED;
+      }
+      Print("✓ ATR Indicator initialized");
+   }
+   
+   if(Use_VWAP)
+   {
+      // VWAP is calculated manually
+      Print("✓ VWAP calculation enabled");
+   }
+   
+   if(Use_OBV)
+   {
+      handleOBV = iOBV(_Symbol, PERIOD_CURRENT, VOLUME_TICK);
+      if(handleOBV == INVALID_HANDLE)
+      {
+         Print("❌ Failed to create OBV indicator");
+         return INIT_FAILED;
+      }
+      Print("✓ OBV Indicator initialized");
+   }
+   
+   // Set arrays as series
+   ArraySetAsSeries(rsiBuffer, true);
+   ArraySetAsSeries(macdMainBuffer, true);
+   ArraySetAsSeries(macdSignalBuffer, true);
+   ArraySetAsSeries(adxBuffer, true);
+   ArraySetAsSeries(bbUpperBuffer, true);
+   ArraySetAsSeries(bbMiddleBuffer, true);
+   ArraySetAsSeries(bbLowerBuffer, true);
+   ArraySetAsSeries(mfiBuffer, true);
+   ArraySetAsSeries(atrBuffer, true);
+   ArraySetAsSeries(vwapBuffer, true);
+   ArraySetAsSeries(obvBuffer, true);
+   
+   // Count active signals
+   CountActiveSignals();
+   
+   Print("═══════════════════════════════════════════════════════════");
+   Print("  INITIALIZATION COMPLETE");
+   Print("  Active Techniques: ", totalSignalsActive);
+   Print("  Symbol: ", _Symbol);
+   Print("  Timeframe: ", EnumToString(_Period));
+   Print("═══════════════════════════════════════════════════════════");
+   
+   return INIT_SUCCEEDED;
+}
+
+//+------------------------------------------------------------------+
+//| Expert deinitialization function                                  |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+   // Release indicator handles
+   if(handleRSI != INVALID_HANDLE) IndicatorRelease(handleRSI);
+   if(handleMACD != INVALID_HANDLE) IndicatorRelease(handleMACD);
+   if(handleADX != INVALID_HANDLE) IndicatorRelease(handleADX);
+   if(handleBB != INVALID_HANDLE) IndicatorRelease(handleBB);
+   if(handleMFI != INVALID_HANDLE) IndicatorRelease(handleMFI);
+   if(handleATR != INVALID_HANDLE) IndicatorRelease(handleATR);
+   if(handleOBV != INVALID_HANDLE) IndicatorRelease(handleOBV);
+   
+   Comment("");
+   
+   Print("═══════════════════════════════════════════════════════════");
+   Print("  QUANTITATIVE EA - SHUTDOWN");
+   Print("  Reason: ", GetUninitReasonText(reason));
+   Print("═══════════════════════════════════════════════════════════");
+}
+
+//+------------------------------------------------------------------+
+//| Expert tick function                                              |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+   // Check if new bar
+   if(!IsNewBar()) return;
+   
+   // Update daily P&L tracking
+   UpdateDailyPnL();
+   
+   // Check daily loss limit
+   if(CheckDailyLossLimit())
+   {
+      Print("⛔ Daily loss limit reached. Trading disabled.");
+      return;
+   }
+   
+   // Check if trading is enabled
+   if(!Enable_Trading) return;
+   
+   // Time filters
+   if(!CheckTimeFilters()) return;
+   
+   // Check max trades
+   if(CountOpenPositions() >= Max_Total_Trades) return;
+   if(CountOpenPositions(_Symbol) >= Max_Trades_Per_Symbol) return;
+   
+   // Update indicator buffers
+   if(!UpdateIndicators()) return;
+   
+   // Get trading signal
+   double signalStrength = 0;
+   int signal = GetCombinedSignal(signalStrength);
+   
+   // Check signal threshold
+   if(MathAbs(signalStrength) < Signal_Threshold) return;
+   
+   // Check spread
+   double spread = symbolInfo.Spread() * symbolInfo.Point();
+   if(spread > Max_Spread_Points * symbolInfo.Point())
+   {
+      Print("⚠️ Spread too wide: ", spread / symbolInfo.Point(), " points");
+      return;
+   }
+   
+   // Execute trade
+   if(signal == 1) // BUY
+   {
+      ExecuteBuy(signalStrength);
+   }
+   else if(signal == -1) // SELL
+   {
+      ExecuteSell(signalStrength);
+   }
+   
+   // Manage existing positions
+   ManagePositions();
+   
+   // Update display panel
+   if(Show_Panel) UpdatePanel(signal, signalStrength);
+}
+
+//+------------------------------------------------------------------+
+//| Get Combined Trading Signal                                       |
+//+------------------------------------------------------------------+
+int GetCombinedSignal(double &strength)
+{
+   double totalSignal = 0;
+   double totalWeight = 0;
+   int confirmations = 0;
+   int requiredConfirmations = 0;
+   
+   // === MOMENTUM SIGNALS ===
+   
+   // RSI Signal
+   if(Use_RSI && rsiBuffer[0] > 0)
+   {
+      double rsiSignal = 0;
+      if(rsiBuffer[0] < RSI_Oversold) rsiSignal = 1;  // Oversold = Buy
+      else if(rsiBuffer[0] > RSI_Overbought) rsiSignal = -1;  // Overbought = Sell
+      
+      totalSignal += rsiSignal * RSI_Weight;
+      totalWeight += RSI_Weight;
+      if(rsiSignal != 0) confirmations++;
+      requiredConfirmations++;
+   }
+   
+   // MACD Signal
+   if(Use_MACD && macdMainBuffer[0] != 0)
+   {
+      double macdSignal = 0;
+      if(macdMainBuffer[0] > macdSignalBuffer[0] && macdMainBuffer[1] <= macdSignalBuffer[1])
+         macdSignal = 1;  // Bullish crossover
+      else if(macdMainBuffer[0] < macdSignalBuffer[0] && macdMainBuffer[1] >= macdSignalBuffer[1])
+         macdSignal = -1;  // Bearish crossover
+      
+      totalSignal += macdSignal * MACD_Weight;
+      totalWeight += MACD_Weight;
+      if(macdSignal != 0) confirmations++;
+      requiredConfirmations++;
+   }
+   
+   // ADX Signal (trend strength)
+   if(Use_ADX && adxBuffer[0] > 0)
+   {
+      double adxSignal = 0;
+      if(adxBuffer[0] > ADX_Threshold)
+      {
+         // Strong trend - use MACD direction
+         if(macdMainBuffer[0] > 0) adxSignal = 1;
+         else if(macdMainBuffer[0] < 0) adxSignal = -1;
+      }
+      
+      totalSignal += adxSignal * ADX_Weight;
+      totalWeight += ADX_Weight;
+      if(adxSignal != 0) confirmations++;
+      requiredConfirmations++;
+   }
+   
+   // === MEAN REVERSION SIGNALS ===
+   
+   // Bollinger Bands
+   if(Use_Bollinger && bbUpperBuffer[0] > 0)
+   {
+      double bbSignal = 0;
+      double close = iClose(_Symbol, PERIOD_CURRENT, 0);
+      
+      if(close <= bbLowerBuffer[0]) bbSignal = 1;  // Touch lower band = Buy
+      else if(close >= bbUpperBuffer[0]) bbSignal = -1;  // Touch upper band = Sell
+      
+      totalSignal += bbSignal * BB_Weight;
+      totalWeight += BB_Weight;
+      if(bbSignal != 0) confirmations++;
+      requiredConfirmations++;
+   }
+   
+   // Z-Score
+   if(Use_ZScore)
+   {
+      double zscore = CalculateZScore(ZScore_Period);
+      double zSignal = 0;
+      
+      if(zscore < -ZScore_Threshold) zSignal = 1;  // Oversold
+      else if(zscore > ZScore_Threshold) zSignal = -1;  // Overbought
+      
+      totalSignal += zSignal * ZScore_Weight;
+      totalWeight += ZScore_Weight;
+      if(zSignal != 0) confirmations++;
+      requiredConfirmations++;
+   }
+   
+   // === VOLUME SIGNALS ===
+   
+   // VWAP
+   if(Use_VWAP)
+   {
+      double vwap = CalculateVWAP();
+      double close = iClose(_Symbol, PERIOD_CURRENT, 0);
+      double vwapSignal = 0;
+      
+      if(close > vwap) vwapSignal = 1;  // Above VWAP = Buy
+      else if(close < vwap) vwapSignal = -1;  // Below VWAP = Sell
+      
+      totalSignal += vwapSignal * VWAP_Weight;
+      totalWeight += VWAP_Weight;
+      if(vwapSignal != 0) confirmations++;
+      requiredConfirmations++;
+   }
+   
+   // MFI
+   if(Use_MFI && mfiBuffer[0] > 0)
+   {
+      double mfiSignal = 0;
+      
+      if(mfiBuffer[0] < MFI_Oversold) mfiSignal = 1;
+      else if(mfiBuffer[0] > MFI_Overbought) mfiSignal = -1;
+      
+      totalSignal += mfiSignal * MFI_Weight;
+      totalWeight += MFI_Weight;
+      if(mfiSignal != 0) confirmations++;
+      requiredConfirmations++;
+   }
+   
+   // OBV
+   if(Use_OBV && obvBuffer[0] != 0)
+   {
+      double obvSignal = 0;
+      double obvMA = CalculateOBVMA(OBV_MA_Period);
+      
+      if(obvBuffer[0] > obvMA && obvBuffer[1] <= obvMA) obvSignal = 1;
+      else if(obvBuffer[0] < obvMA && obvBuffer[1] >= obvMA) obvSignal = -1;
+      
+      totalSignal += obvSignal * OBV_Weight;
+      totalWeight += OBV_Weight;
+      if(obvSignal != 0) confirmations++;
+      requiredConfirmations++;
+   }
+   
+   // === VOLATILITY FILTERS ===
+   
+   if(Use_Volatility_Filter)
+   {
+      double volRatio = CalculateVolatilityRatio(Vol_Period);
+      if(volRatio > Vol_Threshold)
+      {
+         Print("⚠️ High volatility regime - reducing position size");
+         // Signal is reduced, not eliminated
+         totalSignal *= 0.7;
+      }
+   }
+   
+   // === REGIME FILTER ===
+   
+   if(Use_Regime_Filter)
+   {
+      int regime = DetectRegime(Regime_Period);
+      // regime: 1 = trending up, -1 = trending down, 0 = ranging
+      
+      if(regime != 0)
+      {
+         totalSignal += regime * Regime_Weight;
+         totalWeight += Regime_Weight;
+      }
+   }
+   
+   // === TIME-BASED WEIGHT BOOST ===
+   
+   if(Use_Session_Filter && Trade_Overlap && IsLondonNYOverlap())
+   {
+      totalSignal *= Overlap_Weight;
+      Print("📈 London-NY Overlap - Signal boosted by ", Overlap_Weight, "x");
+   }
+   
+   // === STATISTICAL SIGNALS ===
+   
+   // Raw Returns
+   if(Use_Returns)
+   {
+      double returns = CalculateReturns(Returns_Period);
+      double returnSignal = 0;
+      
+      if(returns > 0.0001) returnSignal = 1;  // Positive momentum
+      else if(returns < -0.0001) returnSignal = -1;  // Negative momentum
+      
+      totalSignal += returnSignal * Returns_Weight;
+      totalWeight += Returns_Weight;
+   }
+   
+   // Returns Skewness
+   if(Use_Skewness)
+   {
+      double skew = CalculateSkewness(Skew_Period);
+      double skewSignal = 0;
+      
+      // Negative skew = downside risk (SELL)
+      // Positive skew = upside potential (BUY)
+      if(skew > Skew_Threshold) skewSignal = 1;
+      else if(skew < -Skew_Threshold) skewSignal = -1;
+      
+      totalSignal += skewSignal * Skew_Weight;
+      totalWeight += Skew_Weight;
+   }
+   
+   // Returns Kurtosis
+   if(Use_Kurtosis)
+   {
+      double kurt = CalculateKurtosis(Kurt_Period);
+      double kurtSignal = 0;
+      
+      // High kurtosis = fat tails (risk, reduce position or avoid)
+      // Low kurtosis = normal distribution (safer)
+      if(kurt < Kurt_Threshold) kurtSignal = 0;  // Neutral for low kurt
+      else kurtSignal = 0;  // High kurt = no directional signal, just risk
+      
+      totalSignal += kurtSignal * Kurt_Weight;
+      totalWeight += Kurt_Weight;
+   }
+   
+   // MA Distance
+   if(Use_MA_Distance)
+   {
+      double maDistance = CalculateMADistance(MA_Distance_Period);
+      double maSignal = 0;
+      
+      if(maDistance > 0.001) maSignal = 1;  // Price above MA = bullish
+      else if(maDistance < -0.001) maSignal = -1;  // Price below MA = bearish
+      
+      totalSignal += maSignal * MA_Distance_Weight;
+      totalWeight += MA_Distance_Weight;
+   }
+   
+   // ROC (Rate of Change)
+   if(Use_ROC)
+   {
+      double roc = CalculateROC(ROC_Period);
+      double rocSignal = 0;
+      
+      if(roc > 0.001) rocSignal = 1;  // Positive momentum
+      else if(roc < -0.001) rocSignal = -1;  // Negative momentum
+      
+      totalSignal += rocSignal * ROC_Weight;
+      totalWeight += ROC_Weight;
+   }
+   
+   // === MICROSTRUCTURE FILTERS ===
+   
+   if(Use_HighLow_Spread)
+   {
+      double hlSpread = CalculateHLSpread();
+      if(hlSpread > HL_Threshold)
+      {
+         Print("⚠️ HL Spread too wide: ", hlSpread);
+         return 0;  // No trade
+      }
+   }
+   
+   if(Use_Shadow_Analysis)
+   {
+      double shadowSignal = AnalyzeShadows();
+      totalSignal += shadowSignal * Shadow_Weight;
+      totalWeight += Shadow_Weight;
+   }
+   
+   if(Use_Gap_Analysis)
+   {
+      double gapSignal = AnalyzeGaps();
+      totalSignal += gapSignal * Gap_Weight;
+      totalWeight += Gap_Weight;
+   }
+   
+   if(Use_CO_Spread)
+   {
+      double coSignal = AnalyzeCOSpread();
+      totalSignal += coSignal * CO_Weight;
+      totalWeight += CO_Weight;
+   }
+   
+   // === CALCULATE FINAL SIGNAL ===
+   
+   if(Require_All_Confirmations && confirmations < requiredConfirmations)
+   {
+      strength = 0;
+      return 0;
+   }
+   
+   if(Use_Weighted_Average && totalWeight > 0)
+   {
+      strength = totalSignal / totalWeight;
+   }
+   else
+   {
+      strength = totalSignal;
+   }
+   
+   // Determine direction
+   if(strength >= Signal_Threshold) return 1;  // BUY
+   else if(strength <= -Signal_Threshold) return -1;  // SELL
+   else return 0;  // NO TRADE
+}
+
+//+------------------------------------------------------------------+
+//| Calculate Take Profit Level                                       |
+//+------------------------------------------------------------------+
+double CalculateTakeProfit(int direction)
+{
+   double tp = 0;
+   double entryPrice = (direction == 1) ? symbolInfo.Ask() : symbolInfo.Bid();
+   double atr = atrBuffer[0];
+   
+   switch(TP_Mode)
+   {
+      case TP_FIXED:
+         tp = entryPrice + direction * TP_Pips * symbolInfo.Point() * 10;
+         break;
+         
+      case TP_ATR:
+         tp = entryPrice + direction * atr * TP_ATR_Multiplier;
+         break;
+         
+      case TP_LIQUIDITY:
+         tp = FindLiquidityZone(direction, TP_Lookback);
+         if(tp == 0) // Fallback to ATR
+            tp = entryPrice + direction * atr * TP_ATR_Multiplier;
+         break;
+         
+      case TP_RR_BASED:
+      {
+         double sl = CalculateStopLoss(direction);
+         double slDistance = MathAbs(entryPrice - sl);
+         tp = entryPrice + direction * slDistance * Risk_Reward_Ratio;
+         break;
+      }
+   }
+   
+   return NormalizeDouble(tp, symbolInfo.Digits());
+}
+
+//+------------------------------------------------------------------+
+//| Calculate Stop Loss Level                                         |
+//+------------------------------------------------------------------+
+double CalculateStopLoss(int direction)
+{
+   double sl = 0;
+   double entryPrice = (direction == 1) ? symbolInfo.Ask() : symbolInfo.Bid();
+   double atr = atrBuffer[0];
+   
+   switch(SL_Mode)
+   {
+      case SL_FIXED:
+         sl = entryPrice - direction * SL_Pips * symbolInfo.Point() * 10;
+         break;
+         
+      case SL_ATR:
+         sl = entryPrice - direction * atr * SL_ATR_Multiplier;
+         break;
+         
+      case SL_RR_RATIO:
+         sl = entryPrice - direction * atr * SL_ATR_Multiplier;
+         break;
+         
+      case SL_SWING:
+         sl = FindSwingLevel(direction);
+         if(sl == 0) // Fallback to ATR
+            sl = entryPrice - direction * atr * SL_ATR_Multiplier;
+         break;
+   }
+   
+   return NormalizeDouble(sl, symbolInfo.Digits());
+}
+
+//+------------------------------------------------------------------+
+//| Execute Buy Order                                                 |
+//+------------------------------------------------------------------+
+void ExecuteBuy(double signalStrength)
+{
+   double lotSize = CalculateLotSize(1, signalStrength);
+   double sl = CalculateStopLoss(1);
+   double tp = CalculateTakeProfit(1);
+   
+   if(lotSize < Min_Position_Size)
+   {
+      Print("❌ Lot size too small: ", lotSize);
+      return;
+   }
+   
+   trade.SetExpertMagicNumber(Magic_Number);
+   
+   if(trade.Buy(lotSize, _Symbol, 0, sl, tp, Trade_Comment))
+   {
+      Print("✅ BUY executed: ", lotSize, " lots | SL: ", sl, " | TP: ", tp, " | Signal: ", signalStrength);
+   }
+   else
+   {
+      Print("❌ BUY failed: ", GetLastError());
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Execute Sell Order                                                |
+//+------------------------------------------------------------------+
+void ExecuteSell(double signalStrength)
+{
+   double lotSize = CalculateLotSize(-1, signalStrength);
+   double sl = CalculateStopLoss(-1);
+   double tp = CalculateTakeProfit(-1);
+   
+   if(lotSize < Min_Position_Size)
+   {
+      Print("❌ Lot size too small: ", lotSize);
+      return;
+   }
+   
+   trade.SetExpertMagicNumber(Magic_Number);
+   
+   if(trade.Sell(lotSize, _Symbol, 0, sl, tp, Trade_Comment))
+   {
+      Print("✅ SELL executed: ", lotSize, " lots | SL: ", sl, " | TP: ", tp, " | Signal: ", signalStrength);
+   }
+   else
+   {
+      Print("❌ SELL failed: ", GetLastError());
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Calculate Position Size Based on Risk                             |
+//+------------------------------------------------------------------+
+double CalculateLotSize(int direction, double signalStrength)
+{
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double riskAmount = balance * Risk_Percent / 100.0;
+   
+   // Adjust risk based on signal strength (stronger signal = larger position)
+   double signalMultiplier = MathMin(MathAbs(signalStrength) / Signal_Threshold, 1.5);
+   riskAmount *= signalMultiplier;
+   
+   double entryPrice = (direction == 1) ? symbolInfo.Ask() : symbolInfo.Bid();
+   double sl = CalculateStopLoss(direction);
+   double slDistance = MathAbs(entryPrice - sl);
+   
+   if(slDistance == 0) return Min_Position_Size;
+   
+   double tickValue = symbolInfo.TickValue();
+   double tickSize = symbolInfo.TickSize();
+   
+   double lotSize = (riskAmount / slDistance) * tickSize / tickValue;
+   
+   // Apply limits
+   lotSize = MathMax(lotSize, Min_Position_Size);
+   lotSize = MathMin(lotSize, Max_Position_Size);
+   
+   // Normalize to lot step
+   double lotStep = symbolInfo.LotsStep();
+   lotSize = MathFloor(lotSize / lotStep) * lotStep;
+   
+   return lotSize;
+}
+
+//+------------------------------------------------------------------+
+//| Manage Open Positions                                             |
+//+------------------------------------------------------------------+
+void ManagePositions()
+{
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      if(position.SelectByIndex(i))
+      {
+         if(position.Symbol() != _Symbol) continue;
+         if(position.Magic() != Magic_Number) continue;
+         
+         // Partial TP
+         if(Use_Partial_TP)
+         {
+            CheckPartialTP(position.Ticket());
+         }
+         
+         // Trailing Stop
+         if(Use_Trailing_Stop)
+         {
+            ApplyTrailingStop(position.Ticket());
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Apply Trailing Stop                                               |
+//+------------------------------------------------------------------+
+void ApplyTrailingStop(ulong ticket)
+{
+   if(!position.SelectByTicket(ticket)) return;
+   
+   double trailStart = Trail_Start_Pips * symbolInfo.Point() * 10;
+   double trailStep = Trail_Step_Pips * symbolInfo.Point() * 10;
+   
+   if(position.Type() == POSITION_TYPE_BUY)
+   {
+      double bid = symbolInfo.Bid();
+      double profit = bid - position.PriceOpen();
+      
+      if(profit >= trailStart)
+      {
+         double newSL = bid - trailStep;
+         if(newSL > position.StopLoss() + trailStep * 0.5)
+         {
+            trade.PositionModify(ticket, newSL, position.TakeProfit());
+            Print("📊 Trailing stop updated (BUY): ", newSL);
+         }
+      }
+   }
+   else if(position.Type() == POSITION_TYPE_SELL)
+   {
+      double ask = symbolInfo.Ask();
+      double profit = position.PriceOpen() - ask;
+      
+      if(profit >= trailStart)
+      {
+         double newSL = ask + trailStep;
+         if(newSL < position.StopLoss() - trailStep * 0.5 || position.StopLoss() == 0)
+         {
+            trade.PositionModify(ticket, newSL, position.TakeProfit());
+            Print("📊 Trailing stop updated (SELL): ", newSL);
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Check and Execute Partial TP                                      |
+//+------------------------------------------------------------------+
+void CheckPartialTP(ulong ticket)
+{
+   if(!position.SelectByTicket(ticket)) return;
+   
+   double rrRatio = CalculateCurrentRR(ticket);
+   
+   // Check if we've hit partial TP level
+   if(rrRatio >= Partial_TP_Ratio)
+   {
+      // Close partial position
+      double closeVolume = position.Volume() * Partial_TP_Percent / 100.0;
+      closeVolume = NormalizeDouble(closeVolume, 2);
+      
+      if(closeVolume >= symbolInfo.LotsMin())
+      {
+         if(trade.PositionClosePartial(ticket, closeVolume))
+         {
+            Print("💰 Partial TP executed: Closed ", Partial_TP_Percent, "% at ", Partial_TP_Ratio, ":1 RR");
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Helper Functions                                                  |
+//+------------------------------------------------------------------+
+
+bool IsNewBar()
+{
+   datetime currentBarTime = iTime(_Symbol, PERIOD_CURRENT, 0);
+   if(currentBarTime != lastBarTime)
+   {
+      lastBarTime = currentBarTime;
+      return true;
+   }
+   return false;
+}
+
+bool UpdateIndicators()
+{
+   if(Use_RSI)
+   {
+      if(CopyBuffer(handleRSI, 0, 0, 3, rsiBuffer) <= 0) return false;
+   }
+   
+   if(Use_MACD)
+   {
+      if(CopyBuffer(handleMACD, 0, 0, 3, macdMainBuffer) <= 0) return false;
+      if(CopyBuffer(handleMACD, 1, 0, 3, macdSignalBuffer) <= 0) return false;
+   }
+   
+   if(Use_ADX)
+   {
+      if(CopyBuffer(handleADX, 0, 0, 3, adxBuffer) <= 0) return false;
+   }
+   
+   if(Use_Bollinger)
+   {
+      if(CopyBuffer(handleBB, 1, 0, 3, bbUpperBuffer) <= 0) return false;
+      if(CopyBuffer(handleBB, 0, 0, 3, bbMiddleBuffer) <= 0) return false;
+      if(CopyBuffer(handleBB, 2, 0, 3, bbLowerBuffer) <= 0) return false;
+   }
+   
+   if(Use_MFI)
+   {
+      if(CopyBuffer(handleMFI, 0, 0, 3, mfiBuffer) <= 0) return false;
+   }
+   
+   if(Use_ATR)
+   {
+      if(CopyBuffer(handleATR, 0, 0, 3, atrBuffer) <= 0) return false;
+   }
+   
+   if(Use_OBV)
+   {
+      if(CopyBuffer(handleOBV, 0, 0, OBV_MA_Period + 5, obvBuffer) <= 0) return false;
+   }
+   
+   return true;
+}
+
+bool CheckTimeFilters()
+{
+   MqlDateTime dt;
+   TimeToStruct(TimeCurrent(), dt);
+   
+   // Hour filter
+   if(Use_Hour_Filter)
+   {
+      if(dt.hour < Start_Hour || dt.hour >= End_Hour)
+         return false;
+   }
+   
+   // Session filter
+   if(Use_Session_Filter)
+   {
+      bool inSession = false;
+      
+      if(Trade_London && dt.hour >= 8 && dt.hour < 17) inSession = true;
+      if(Trade_NewYork && dt.hour >= 13 && dt.hour < 22) inSession = true;
+      if(Trade_Tokyo && (dt.hour >= 0 && dt.hour < 9)) inSession = true;
+      
+      if(!inSession) return false;
+   }
+   
+   // Monday filter
+   if(Avoid_Monday && dt.day_of_week == 1) return false;
+   
+   // Friday PM filter
+   if(Avoid_Friday_PM && dt.day_of_week == 5 && dt.hour >= 16) return false;
+   
+   return true;
+}
+
+bool IsLondonNYOverlap()
+{
+   MqlDateTime dt;
+   TimeToStruct(TimeCurrent(), dt);
+   return (dt.hour >= 13 && dt.hour < 17);
+}
+
+int CountOpenPositions(string symbol = NULL)
+{
+   int count = 0;
+   for(int i = 0; i < PositionsTotal(); i++)
+   {
+      if(position.SelectByIndex(i))
+      {
+         if(position.Magic() == Magic_Number)
+         {
+            if(symbol == NULL || position.Symbol() == symbol)
+               count++;
+         }
+      }
+   }
+   return count;
+}
+
+void CountActiveSignals()
+{
+   totalSignalsActive = 0;
+   if(Use_RSI) totalSignalsActive++;
+   if(Use_MACD) totalSignalsActive++;
+   if(Use_ADX) totalSignalsActive++;
+   if(Use_Bollinger) totalSignalsActive++;
+   if(Use_ZScore) totalSignalsActive++;
+   if(Use_VWAP) totalSignalsActive++;
+   if(Use_MFI) totalSignalsActive++;
+   if(Use_OBV) totalSignalsActive++;
+   if(Use_Regime_Filter) totalSignalsActive++;
+   if(Use_Autocorr) totalSignalsActive++;
+   if(Use_Returns) totalSignalsActive++;
+   if(Use_Skewness) totalSignalsActive++;
+   if(Use_Kurtosis) totalSignalsActive++;
+   if(Use_MA_Distance) totalSignalsActive++;
+   if(Use_Gap_Analysis) totalSignalsActive++;
+   if(Use_CO_Spread) totalSignalsActive++;
+   if(Use_ROC) totalSignalsActive++;
+}
+
+// Calculate Z-Score
+double CalculateZScore(int period)
+{
+   double close = iClose(_Symbol, PERIOD_CURRENT, 0);
+   double ma = 0, sum = 0, sumSq = 0;
+   
+   for(int i = 0; i < period; i++)
+   {
+      double price = iClose(_Symbol, PERIOD_CURRENT, i);
+      sum += price;
+      sumSq += price * price;
+   }
+   
+   ma = sum / period;
+   double variance = (sumSq / period) - (ma * ma);
+   double stdDev = MathSqrt(variance);
+   
+   if(stdDev == 0) return 0;
+   
+   return (close - ma) / stdDev;
+}
+
+// Calculate VWAP
+double CalculateVWAP()
+{
+   double sumPV = 0, sumV = 0;
+   
+   for(int i = 0; i < 20; i++)
+   {
+      double typical = (iHigh(_Symbol, PERIOD_CURRENT, i) + 
+                       iLow(_Symbol, PERIOD_CURRENT, i) + 
+                       iClose(_Symbol, PERIOD_CURRENT, i)) / 3.0;
+      long volume = iVolume(_Symbol, PERIOD_CURRENT, i);
+      
+      sumPV += typical * (double)volume;
+      sumV += (double)volume;
+   }
+   
+   return sumV > 0 ? sumPV / sumV : 0;
+}
+
+// Calculate OBV MA
+double CalculateOBVMA(int period)
+{
+   double sum = 0;
+   for(int i = 0; i < period && i < ArraySize(obvBuffer); i++)
+   {
+      sum += obvBuffer[i];
+   }
+   return sum / period;
+}
+
+// Calculate Volatility Ratio
+double CalculateVolatilityRatio(int period)
+{
+   double currentVol = atrBuffer[0];
+   double sum = 0;
+   
+   // Get historical ATR values using buffer
+   double tempATR[];
+   ArraySetAsSeries(tempATR, true);
+   
+   if(CopyBuffer(handleATR, 0, 0, period, tempATR) > 0)
+   {
+      for(int i = 0; i < period; i++)
+      {
+         sum += tempATR[i];
+      }
+   }
+   
+   double medianVol = sum / period;
+   return medianVol > 0 ? currentVol / medianVol : 1.0;
+}
+
+// Detect Market Regime
+int DetectRegime(int period)
+{
+   double sumReturns = 0;
+   double sumVolatility = 0;
+   
+   for(int i = 1; i < period; i++)
+   {
+      double ret = (iClose(_Symbol, PERIOD_CURRENT, i-1) - iClose(_Symbol, PERIOD_CURRENT, i)) 
+                   / iClose(_Symbol, PERIOD_CURRENT, i);
+      sumReturns += ret;
+   }
+   
+   double avgReturn = sumReturns / period;
+   
+   if(avgReturn > 0.001) return 1;  // Trending up
+   else if(avgReturn < -0.001) return -1;  // Trending down
+   else return 0;  // Ranging
+}
+
+// Calculate HL Spread
+double CalculateHLSpread()
+{
+   double high = iHigh(_Symbol, PERIOD_CURRENT, 0);
+   double low = iLow(_Symbol, PERIOD_CURRENT, 0);
+   double close = iClose(_Symbol, PERIOD_CURRENT, 0);
+   
+   return (high - low) / close;
+}
+
+// Analyze Shadows
+double AnalyzeShadows()
+{
+   double open = iOpen(_Symbol, PERIOD_CURRENT, 0);
+   double close = iClose(_Symbol, PERIOD_CURRENT, 0);
+   double high = iHigh(_Symbol, PERIOD_CURRENT, 0);
+   double low = iLow(_Symbol, PERIOD_CURRENT, 0);
+   
+   double upperShadow = high - MathMax(open, close);
+   double lowerShadow = MathMin(open, close) - low;
+   double body = MathAbs(close - open);
+   
+   if(body == 0) return 0;
+   
+   // Long lower shadow = bullish
+   if(lowerShadow > body * 2 && upperShadow < body) return 1;
+   
+   // Long upper shadow = bearish
+   if(upperShadow > body * 2 && lowerShadow < body) return -1;
+   
+   return 0;
+}
+
+// Analyze Gaps
+double AnalyzeGaps()
+{
+   double prevClose = iClose(_Symbol, PERIOD_CURRENT, 1);
+   double open = iOpen(_Symbol, PERIOD_CURRENT, 0);
+   
+   double gap = (open - prevClose) / prevClose;
+   
+   if(gap > 0.001) return -1;  // Gap up - potential reversal
+   else if(gap < -0.001) return 1;  // Gap down - potential reversal
+   
+   return 0;
+}
+
+// Calculate Returns
+double CalculateReturns(int period)
+{
+   double current = iClose(_Symbol, PERIOD_CURRENT, 0);
+   double previous = iClose(_Symbol, PERIOD_CURRENT, period);
+   
+   if(previous == 0) return 0;
+   
+   return (current - previous) / previous;
+}
+
+// Calculate Skewness
+double CalculateSkewness(int period)
+{
+   double sum = 0, mean = 0, m3 = 0, variance = 0;
+   
+   // Calculate mean
+   for(int i = 0; i < period; i++)
+   {
+      double ret = (iClose(_Symbol, PERIOD_CURRENT, i) - iClose(_Symbol, PERIOD_CURRENT, i+1)) / iClose(_Symbol, PERIOD_CURRENT, i+1);
+      sum += ret;
+   }
+   mean = sum / period;
+   
+   // Calculate variance and third moment
+   for(int i = 0; i < period; i++)
+   {
+      double ret = (iClose(_Symbol, PERIOD_CURRENT, i) - iClose(_Symbol, PERIOD_CURRENT, i+1)) / iClose(_Symbol, PERIOD_CURRENT, i+1);
+      double diff = ret - mean;
+      variance += diff * diff;
+      m3 += diff * diff * diff;
+   }
+   
+   variance = variance / period;
+   double stdDev = MathSqrt(variance);
+   
+   if(stdDev == 0) return 0;
+   
+   double skewness = (m3 / period) / MathPow(stdDev, 3);
+   return skewness;
+}
+
+// Calculate Kurtosis
+double CalculateKurtosis(int period)
+{
+   double sum = 0, mean = 0, m4 = 0, variance = 0;
+   
+   // Calculate mean
+   for(int i = 0; i < period; i++)
+   {
+      double ret = (iClose(_Symbol, PERIOD_CURRENT, i) - iClose(_Symbol, PERIOD_CURRENT, i+1)) / iClose(_Symbol, PERIOD_CURRENT, i+1);
+      sum += ret;
+   }
+   mean = sum / period;
+   
+   // Calculate variance and fourth moment
+   for(int i = 0; i < period; i++)
+   {
+      double ret = (iClose(_Symbol, PERIOD_CURRENT, i) - iClose(_Symbol, PERIOD_CURRENT, i+1)) / iClose(_Symbol, PERIOD_CURRENT, i+1);
+      double diff = ret - mean;
+      variance += diff * diff;
+      m4 += diff * diff * diff * diff;
+   }
+   
+   variance = variance / period;
+   
+   if(variance == 0) return 0;
+   
+   double kurtosis = (m4 / period) / MathPow(variance, 2);
+   return kurtosis - 3.0;  // Excess kurtosis (subtract 3 for normal distribution baseline)
+}
+
+// Calculate MA Distance
+double CalculateMADistance(int period)
+{
+   double close = iClose(_Symbol, PERIOD_CURRENT, 0);
+   double ma = 0;
+   
+   for(int i = 0; i < period; i++)
+   {
+      ma += iClose(_Symbol, PERIOD_CURRENT, i);
+   }
+   ma = ma / period;
+   
+   if(ma == 0) return 0;
+   
+   return (close - ma) / ma;
+}
+
+// Analyze Close-Open Spread
+double AnalyzeCOSpread()
+{
+   double close = iClose(_Symbol, PERIOD_CURRENT, 0);
+   double open = iOpen(_Symbol, PERIOD_CURRENT, 0);
+   
+   if(open == 0) return 0;
+   
+   double coSpread = (close - open) / open;
+   
+   if(coSpread > 0.0005) return 1;  // Bullish candle
+   else if(coSpread < -0.0005) return -1;  // Bearish candle
+   
+   return 0;
+}
+
+// Calculate ROC (Rate of Change)
+double CalculateROC(int period)
+{
+   double current = iClose(_Symbol, PERIOD_CURRENT, 0);
+   double previous = iClose(_Symbol, PERIOD_CURRENT, period);
+   
+   if(previous == 0) return 0;
+   
+   return ((current - previous) / previous) * 100.0;
+}
+
+// Calculate Bollinger Squeeze
+double CalculateBBSqueeze()
+{
+   if(!Use_Bollinger || bbUpperBuffer[0] == 0) return 0;
+   
+   double bbWidth = bbUpperBuffer[0] - bbLowerBuffer[0];
+   double bbMean = 0;
+   
+   // Calculate average BB width over 100 periods
+   for(int i = 0; i < 100 && i < ArraySize(bbUpperBuffer); i++)
+   {
+      if(bbUpperBuffer[i] > 0 && bbLowerBuffer[i] > 0)
+         bbMean += (bbUpperBuffer[i] - bbLowerBuffer[i]);
+   }
+   bbMean = bbMean / 100.0;
+   
+   if(bbMean == 0) return 0;
+   
+   return bbWidth / bbMean;
+}
+
+// Calculate Trend Strength
+double CalculateTrendStrength()
+{
+   double close = iClose(_Symbol, PERIOD_CURRENT, 0);
+   double ma20 = 0, stdDev20 = 0;
+   
+   // Calculate 20-period MA
+   for(int i = 0; i < 20; i++)
+   {
+      ma20 += iClose(_Symbol, PERIOD_CURRENT, i);
+   }
+   ma20 = ma20 / 20.0;
+   
+   // Calculate standard deviation
+   for(int i = 0; i < 20; i++)
+   {
+      double diff = iClose(_Symbol, PERIOD_CURRENT, i) - ma20;
+      stdDev20 += diff * diff;
+   }
+   stdDev20 = MathSqrt(stdDev20 / 20.0);
+   
+   if(stdDev20 == 0) return 0;
+   
+   return MathAbs(close - ma20) / stdDev20;
+}
+
+// Find Liquidity Zone (swing high/low)
+double FindLiquidityZone(int direction, int lookback)
+{
+   if(direction == 1) // Buy - find resistance
+   {
+      double highest = iHigh(_Symbol, PERIOD_CURRENT, iHighest(_Symbol, PERIOD_CURRENT, MODE_HIGH, lookback, 1));
+      return highest;
+   }
+   else // Sell - find support
+   {
+      double lowest = iLow(_Symbol, PERIOD_CURRENT, iLowest(_Symbol, PERIOD_CURRENT, MODE_LOW, lookback, 1));
+      return lowest;
+   }
+}
+
+// Find Swing Level for SL
+double FindSwingLevel(int direction)
+{
+   int lookback = 20;
+   
+   if(direction == 1) // Buy - find swing low
+   {
+      return iLow(_Symbol, PERIOD_CURRENT, iLowest(_Symbol, PERIOD_CURRENT, MODE_LOW, lookback, 1));
+   }
+   else // Sell - find swing high
+   {
+      return iHigh(_Symbol, PERIOD_CURRENT, iHighest(_Symbol, PERIOD_CURRENT, MODE_HIGH, lookback, 1));
+   }
+}
+
+// Calculate Current Risk-Reward Ratio
+double CalculateCurrentRR(ulong ticket)
+{
+   if(!position.SelectByTicket(ticket)) return 0;
+   
+   double entry = position.PriceOpen();
+   double sl = position.StopLoss();
+   double current = (position.Type() == POSITION_TYPE_BUY) ? symbolInfo.Bid() : symbolInfo.Ask();
+   
+   double risk = MathAbs(entry - sl);
+   double reward = MathAbs(current - entry);
+   
+   if(risk == 0) return 0;
+   
+   return reward / risk;
+}
+
+// Daily P&L Management
+void UpdateDailyPnL()
+{
+   MqlDateTime dt;
+   TimeToStruct(TimeCurrent(), dt);
+   
+   // Reset if new day
+   if(dt.day != dailyPnLDate)
+   {
+      dailyPnL = 0;
+      dailyPnLDate = dt.day;
+   }
+   
+   // Calculate current P&L
+   double currentPnL = 0;
+   for(int i = 0; i < PositionsTotal(); i++)
+   {
+      if(position.SelectByIndex(i))
+      {
+         if(position.Magic() == Magic_Number)
+         {
+            currentPnL += position.Profit();
+         }
+      }
+   }
+   
+   dailyPnL = currentPnL;
+}
+
+bool CheckDailyLossLimit()
+{
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double maxLoss = balance * Max_Daily_Loss_Percent / 100.0;
+   
+   return (dailyPnL < -maxLoss);
+}
+
+// Display Panel
+void UpdatePanel(int signal, double strength)
+{
+   string panel = "\n";
+   panel += "═══════════════════════════════════\n";
+   panel += "   QUANTITATIVE EA - LIVE STATUS   \n";
+   panel += "═══════════════════════════════════\n";
+   panel += "Symbol: " + _Symbol + " | TF: " + EnumToString(_Period) + "\n";
+   panel += "Active Signals: " + IntegerToString(totalSignalsActive) + "\n";
+   panel += "───────────────────────────────────\n";
+   panel += "Current Signal: ";
+   
+   if(signal == 1) panel += "🟢 BUY";
+   else if(signal == -1) panel += "🔴 SELL";
+   else panel += "⚪ NEUTRAL";
+   
+   panel += " | Strength: " + DoubleToString(strength, 2) + "\n";
+   panel += "───────────────────────────────────\n";
+   panel += "Open Positions: " + IntegerToString(CountOpenPositions(_Symbol)) + "/" + IntegerToString(Max_Trades_Per_Symbol) + "\n";
+   panel += "Daily P&L: " + DoubleToString(dailyPnL, 2) + " " + AccountInfoString(ACCOUNT_CURRENCY) + "\n";
+   panel += "═══════════════════════════════════\n";
+   
+   Comment(panel);
+}
+
+string GetUninitReasonText(int reason)
+{
+   switch(reason)
+   {
+      case REASON_PROGRAM: return "Program stopped";
+      case REASON_REMOVE: return "EA removed from chart";
+      case REASON_RECOMPILE: return "EA recompiled";
+      case REASON_CHARTCHANGE: return "Chart changed";
+      case REASON_CHARTCLOSE: return "Chart closed";
+      case REASON_PARAMETERS: return "Parameters changed";
+      case REASON_ACCOUNT: return "Account changed";
+      default: return "Unknown reason";
+   }
+}
+
+//+------------------------------------------------------------------+
+
+
